@@ -6,17 +6,32 @@ import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="Auto NSE Cyclical & Sector Scanner v7", layout="wide")
+st.set_page_config(page_title="Pure Cyclicals NSE Scanner", layout="wide")
 
-st.title("🔄 Auto NSE Cyclical Sector & Top 10 Workbench (v7)")
-st.caption("Zero-Upload Nifty 500 Auto-Scan | Sector Breadth | RS (1–99) | Stage Duration | 3-Tranche Allocation")
+st.title("🔄 Pure Cyclicals NSE Bottom-Turnaround Scanner")
+st.caption("Pure Cyclicals Only (No IT / FMCG / Pharma) | Bhaiya + Dharmawat + Parmar | RS (1–99) | Stage Duration | 3-Tranche Plan")
+
+# Strict Pure Cyclical NSE Industries (excludes IT, FMCG, Healthcare, Telecom, Consumer Durables, Media)
+PURE_CYCLICAL_INDUSTRIES = {
+    "Metals & Mining",
+    "Chemicals",
+    "Capital Goods",
+    "Construction",
+    "Construction Materials",
+    "Automobile and Auto Components",
+    "Automobile",
+    "Oil Gas & Consumable Fuels",
+    "Realty",
+    "Power",
+    "Textiles",
+    "Forest Materials",
+    "Services",
+    "Diversified"
+}
 
 # --- Sidebar Controls ---
-st.sidebar.header("🌐 1. Auto Market Universe")
-universe_mode = st.sidebar.radio(
-    "Select Universe",
-    ["Auto: Full Nifty 500 (All NSE Sectors)", "Auto: Nifty 200 (Faster Scan)"]
-)
+st.sidebar.header("🏭 1. Pure Cyclical Scope")
+include_financials = st.sidebar.checkbox("Include Financials (Banks / NBFCs / AMCs)", value=False)
 
 st.sidebar.header("💰 2. Capital & Risk Rules")
 total_capital = st.sidebar.number_input("Total Portfolio Capital (₹)", min_value=50000, value=1000000, step=100000)
@@ -29,42 +44,42 @@ min_turnover_cr = st.sidebar.slider("Liquidity Kill-Switch: Min Weekly Turnover 
 max_ema40_ext = st.sidebar.slider("Overextended Warning: Max % Above 40W EMA", 15, 50, 25, 5)
 min_drawdown = st.sidebar.slider("Min Drawdown from 3Y High (%) for Bottoming", 10, 70, 20, 5)
 vol_threshold = st.sidebar.slider("Min Volume Surge (4W vs 20W Avg)", 1.0, 3.0, 1.2, 0.1)
-min_sector_stocks = st.sidebar.slider("Min Stocks per Sector to Show Theme", 1, 10, 3, 1)
+min_sector_stocks = st.sidebar.slider("Min Stocks per Sector to Show Theme", 1, 10, 2, 1)
 
-# Built-in fallback if NSE server blocks cloud IP
-FALLBACK_UNIVERSE = [
+# Pure Cyclical Fallback Universe (used only if NSE server blocks cloud IP)
+FALLBACK_CYCLICALS = [
     ("TATACHEM", "Chemicals"), ("DEEPAKNTR", "Chemicals"), ("GNFC", "Chemicals"), ("RAIN", "Chemicals"),
     ("SRF", "Chemicals"), ("ATUL", "Chemicals"), ("NAVINFLUOR", "Chemicals"), ("AARTIIND", "Chemicals"),
+    ("CHAMBLFERT", "Chemicals"), ("COROMANDEL", "Chemicals"), ("CLEAN", "Chemicals"), ("ALKYLAMINE", "Chemicals"),
     ("TATASTEEL", "Metals & Mining"), ("SAIL", "Metals & Mining"), ("HINDALCO", "Metals & Mining"),
     ("JSWSTEEL", "Metals & Mining"), ("NMDC", "Metals & Mining"), ("VEDL", "Metals & Mining"),
-    ("SBIN", "Financial Services"), ("HDFCBANK", "Financial Services"), ("ICICIBANK", "Financial Services"),
-    ("CANBK", "Financial Services"), ("BANKBARODA", "Financial Services"), ("HDFCAMC", "Financial Services"),
-    ("NAM-INDIA", "Financial Services"), ("CDSL", "Financial Services"), ("BSE", "Financial Services"),
-    ("CHAMBLFERT", "Chemicals"), ("COROMANDEL", "Chemicals"), ("BALRAMCHIN", "FMCG"), ("TRIVENI", "FMCG"),
-    ("HEG", "Capital Goods"), ("GRAPHITE", "Capital Goods"), ("LT", "Construction"), ("BHEL", "Capital Goods"),
-    ("CUMMINSIND", "Capital Goods"), ("SIEMENS", "Capital Goods"), ("GPPL", "Services"), ("CONCOR", "Services"),
-    ("DELHIVERY", "Services"), ("ONGC", "Oil Gas & Consumable Fuels"), ("BPCL", "Oil Gas & Consumable Fuels"),
-    ("GAIL", "Oil Gas & Consumable Fuels"), ("TATAMOTORS", "Automobile"), ("M&M", "Automobile"),
-    ("ASHOKLEY", "Automobile"), ("SUNPHARMA", "Healthcare"), ("CIPLA", "Healthcare"), ("DRREDDY", "Healthcare"),
-    ("LAURUSLABS", "Healthcare"), ("TCS", "IT"), ("INFY", "IT"), ("WIPRO", "IT"), ("KPITTECH", "IT"),
-    ("DLF", "Realty"), ("GODREJPROP", "Realty"), ("OBEROIRLTY", "Realty"), ("ULTRACEMCO", "Construction Materials"),
-    ("AMBUJACEM", "Construction Materials"), ("ACC", "Construction Materials"), ("DALBHARAT", "Construction Materials")
+    ("JINDALSTEL", "Metals & Mining"), ("NATIONALUM", "Metals & Mining"), ("COALINDIA", "Metals & Mining"),
+    ("HEG", "Capital Goods"), ("GRAPHITE", "Capital Goods"), ("BHEL", "Capital Goods"),
+    ("CUMMINSIND", "Capital Goods"), ("SIEMENS", "Capital Goods"), ("THERMAX", "Capital Goods"),
+    ("LT", "Construction"), ("NCC", "Construction"), ("KNRCON", "Construction"), ("PNCINFRA", "Construction"),
+    ("ULTRACEMCO", "Construction Materials"), ("AMBUJACEM", "Construction Materials"),
+    ("ACC", "Construction Materials"), ("DALBHARAT", "Construction Materials"), ("RAMCOCEM", "Construction Materials"),
+    ("ONGC", "Oil Gas & Consumable Fuels"), ("BPCL", "Oil Gas & Consumable Fuels"),
+    ("GAIL", "Oil Gas & Consumable Fuels"), ("IOC", "Oil Gas & Consumable Fuels"), ("HPCL", "Oil Gas & Consumable Fuels"),
+    ("TATAMOTORS", "Automobile and Auto Components"), ("M&M", "Automobile and Auto Components"),
+    ("ASHOKLEY", "Automobile and Auto Components"), ("ESCORTS", "Automobile and Auto Components"),
+    ("DLF", "Realty"), ("GODREJPROP", "Realty"), ("OBEROIRLTY", "Realty"), ("PRESTIGE", "Realty"),
+    ("GPPL", "Services"), ("CONCOR", "Services"), ("GESHIP", "Services"), ("SCI", "Services"),
+    ("NTPC", "Power"), ("TATAPOWER", "Power"), ("JSWENERGY", "Power"), ("CESC", "Power"),
+    ("KPRMILL", "Textiles"), ("TRIDENT", "Textiles"), ("WELSPUNLIV", "Textiles"), ("JKPAPER", "Forest Materials")
 ]
 
 
 @st.cache_data(ttl=86400)
-def fetch_nse_universe(mode):
-    urls = (
-        [
-            "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv",
-            "https://archives.nseindia.com/content/indices/ind_nifty500list.csv",
-        ]
-        if "500" in mode
-        else [
-            "https://nsearchives.nseindia.com/content/indices/ind_nifty200list.csv",
-            "https://archives.nseindia.com/content/indices/ind_nifty200list.csv",
-        ]
-    )
+def fetch_cyclical_universe(add_fin=False):
+    allowed = set(PURE_CYCLICAL_INDUSTRIES)
+    if add_fin:
+        allowed.add("Financial Services")
+
+    urls = [
+        "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv",
+        "https://archives.nseindia.com/content/indices/ind_nifty500list.csv",
+    ]
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
@@ -76,10 +91,12 @@ def fetch_nse_universe(mode):
                 df = df[["Symbol", "Industry"]].dropna()
                 df["Symbol"] = df["Symbol"].astype(str).str.strip().str.upper()
                 df["Industry"] = df["Industry"].astype(str).str.strip()
-                return list(df.itertuples(index=False, name=None)), "Live NSE Index"
+                df = df[df["Industry"].isin(allowed)]
+                if not df.empty:
+                    return list(df.itertuples(index=False, name=None)), "Live NSE Nifty 500 (Pure Cyclicals Filtered)"
         except Exception:
             continue
-    return FALLBACK_UNIVERSE, "Built-in Multi-Sector Fallback (NSE busy)"
+    return FALLBACK_CYCLICALS, "Built-in Pure Cyclicals Fallback (NSE busy)"
 
 
 @st.cache_data(ttl=3600)
@@ -183,7 +200,7 @@ def analyze_series(symbol, sector, close, vol, min_dd, vol_mult, min_turn_cr, ma
         rank = 2
 
     return {
-        "Theme / Sector": sector,
+        "Cyclical Sector": sector,
         "Symbol": symbol,
         "Stage": stage,
         "Stage Duration": f"{stage_weeks}w ({base_stage_lbl})",
@@ -262,7 +279,7 @@ def build_allocation_plan(top10_df, capital, risk_pct, max_stk_pct, max_sec_pct,
         cmp = r["CMP (₹)"]
         ema40 = r["40W EMA Stop (₹)"]
         ema10 = r["10W EMA (₹)"]
-        sec = r["Theme / Sector"]
+        sec = r["Cyclical Sector"]
 
         stop_loss = round(ema40, 2) if (ema40 < cmp * 0.97) else round(cmp * 0.90, 2)
         risk_per_sh = max(cmp - stop_loss, cmp * 0.03)
@@ -304,7 +321,7 @@ def build_allocation_plan(top10_df, capital, risk_pct, max_stk_pct, max_sec_pct,
         rows.append({
             "Top #": len(rows) + 1,
             "Symbol": r["Symbol"],
-            "Theme / Sector": sec,
+            "Cyclical Sector": sec,
             "Action Plan": action,
             "Alloc (₹)": int(final_alloc),
             "Alloc (%)": round((final_alloc / capital) * 100, 1) if capital > 0 else 0.0,
@@ -336,10 +353,10 @@ def fetch_deep_dive_data(symbol):
     return hist, info
 
 
-# --- ONE-CLICK AUTO SCAN BUTTON ---
-if st.button("🚀 Auto-Scan Whole Market (Find Turning Sectors & Top 10)", type="primary"):
-    universe, source_label = fetch_nse_universe(universe_mode)
-    st.info(f"Loaded **{len(universe)} stocks** from `{source_label}`. Batch-downloading weekly charts...")
+# --- ONE-CLICK PURE CYCLICAL AUTO SCAN ---
+if st.button("🚀 Auto-Scan Pure Cyclicals (Find Turning Sectors & Top 10)", type="primary"):
+    universe, source_label = fetch_cyclical_universe(include_financials)
+    st.info(f"Loaded **{len(universe)} Pure Cyclical stocks** from `{source_label}`. Batch-downloading weekly charts...")
 
     nifty_wret = get_nifty_weighted_return()
     sec_map = {sym: sec for sym, sec in universe}
@@ -353,7 +370,7 @@ if st.button("🚀 Auto-Scan Whole Market (Find Turning Sectors & Top 10)", type
     for i in range(0, len(all_syms), batch_size):
         batch = all_syms[i:i + batch_size]
         tickers = [f"{s}.NS" for s in batch]
-        status_text.text(f"Scanning stocks {i+1} to {min(i+batch_size, len(all_syms))} of {len(all_syms)}...")
+        status_text.text(f"Scanning cyclical stocks {i+1} to {min(i+batch_size, len(all_syms))} of {len(all_syms)}...")
         try:
             data = yf.download(
                 tickers, period="3y", interval="1wk",
@@ -399,24 +416,24 @@ if "scan_results" in st.session_state:
     res_df = st.session_state["scan_results"]
 
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Stocks Scanned", len(res_df))
+    c1.metric("Cyclicals Scanned", len(res_df))
     c2.metric("🟢 Stage 1 Breakouts", int((res_df["Rank"] == 4).sum()))
     c3.metric("🚀 Stage 2 Advancing", int((res_df["Rank"] == 3).sum()))
     c4.metric("🔴 Stage 4 Downturn", int((res_df["Rank"] == 0).sum()))
     c5.metric("❌ Illiquid Rejected", int((res_df["Rank"] == -1).sum()))
 
     tab0, tab1, tab2, tab3 = st.tabs([
-        "🧭 1. Turning Sectors (Auto-Detected)",
+        "🧭 1. Cyclical Sectors Turning",
         "🏆 2. Top 10 Allocation & Accumulation Plan",
-        "📊 3. All Stocks (RS & Stages)",
+        "📊 3. All Cyclical Stocks (RS & Stages)",
         "🔬 4. Deep-Dive (Chart + Porter/SOTP)"
     ])
 
-    # --- TAB 0: SECTOR BREADTH FIRST ---
+    # --- TAB 0: CYCLICAL SECTOR BREADTH ---
     with tab0:
-        st.subheader("🧭 Auto-Detected Sectors Turning Up Across NSE")
+        st.subheader("🧭 Pure Cyclical Sectors Turning Up")
         liquid_df = res_df[res_df["Rank"] >= 0]
-        sec_df = liquid_df.groupby("Theme / Sector").agg(
+        sec_df = liquid_df.groupby("Cyclical Sector").agg(
             Total=("Symbol", "count"),
             Stage1_Breakout=("Rank", lambda x: (x == 4).sum()),
             Stage2_Uptrend=("Rank", lambda x: (x == 3).sum()),
@@ -440,7 +457,7 @@ if "scan_results" in st.session_state:
 
         st.dataframe(
             sec_df[[
-                "Theme / Sector", "Total", "Avg_RS", "Stage1_Breakout", "Stage2_Uptrend",
+                "Cyclical Sector", "Total", "Avg_RS", "Stage1_Breakout", "Stage2_Uptrend",
                 "Stage1_Basing", "Stage4_Downturn", "Turning Up (%)", "Avg_Drawdown", "Leaders"
             ]],
             use_container_width=True,
@@ -449,7 +466,7 @@ if "scan_results" in st.session_state:
 
     # --- TAB 1: TOP 10 CAPITAL ALLOCATION ---
     with tab1:
-        st.subheader("🏆 Expert Top 10: Capital Allocation, 40W EMA Stops & Accumulation Levels")
+        st.subheader("🏆 Expert Top 10 Pure Cyclicals: Allocation, Stops & Accumulation Levels")
         st.caption(
             f"Sized for ₹{total_capital:,.0f} | {risk_per_trade}% risk/trade | {max_stock_pct}% max/stock | "
             f"{max_sector_pct}% sector cap | Min Liquidity: ₹{min_turnover_cr:.0f} Cr/wk."
@@ -476,18 +493,18 @@ if "scan_results" in st.session_state:
                 }
             )
             st.download_button(
-                "⬇️ Download Top 10 Allocation Plan CSV",
+                "⬇️ Download Top 10 Pure Cyclicals Plan CSV",
                 plan_df.to_csv(index=False).encode("utf-8"),
-                "auto_top10_capital_plan.csv",
+                "pure_cyclicals_top10_plan.csv",
                 "text/csv"
             )
         else:
-            st.warning("No stocks passed the current filters. Try lowering Min Weekly Turnover or Drawdown in the sidebar.")
+            st.warning("No cyclical stocks passed the current filters. Try lowering Min Weekly Turnover or Drawdown in the sidebar.")
 
-    # --- TAB 2: ALL STOCKS SCREENER ---
+    # --- TAB 2: ALL CYCLICAL STOCKS ---
     with tab2:
         col1, col2, col3 = st.columns(3)
-        sel_sector = col1.selectbox("Filter by Theme / Sector", ["All Sectors"] + sorted(res_df["Theme / Sector"].unique().tolist()))
+        sel_sector = col1.selectbox("Filter by Cyclical Sector", ["All Cyclical Sectors"] + sorted(res_df["Cyclical Sector"].unique().tolist()))
         sel_stages = col2.multiselect(
             "Filter by Stage",
             options=res_df["Stage"].unique().tolist(),
@@ -496,15 +513,15 @@ if "scan_results" in st.session_state:
         min_rs = col3.slider("Minimum RS Rating", 1, 99, 1)
 
         filt = res_df.copy()
-        if sel_sector != "All Sectors":
-            filt = filt[filt["Theme / Sector"] == sel_sector]
+        if sel_sector != "All Cyclical Sectors":
+            filt = filt[filt["Cyclical Sector"] == sel_sector]
         if sel_stages:
             filt = filt[filt["Stage"].isin(sel_stages)]
         filt = filt[filt["RS Rating"] >= min_rs]
 
         st.dataframe(
             filt[[
-                "Symbol", "Theme / Sector", "Expert Score", "RS Rating", "Stage", "Stage Duration",
+                "Symbol", "Cyclical Sector", "Expert Score", "RS Rating", "Stage", "Stage Duration",
                 "Avg Wk Turnover (₹Cr)", "CMP (₹)", "40W EMA Stop (₹)", "vs 40W EMA (%)",
                 "Drawdown vs 3Y High (%)", "Vol Surge (4W/20W)", "TradingView", "Screener"
             ]],
@@ -519,7 +536,7 @@ if "scan_results" in st.session_state:
     # --- TAB 3: DEEP-DIVE WORKBENCH ---
     with tab3:
         st.subheader("Single-Stock Chart & Research Prompt")
-        stock_choice = st.selectbox("Select a Stock to Audit", res_df["Symbol"].tolist())
+        stock_choice = st.selectbox("Select a Cyclical Stock to Audit", res_df["Symbol"].tolist())
 
         if stock_choice:
             row_data = res_df[res_df["Symbol"] == stock_choice].iloc[0]
@@ -548,7 +565,7 @@ if "scan_results" in st.session_state:
 
             st.markdown("#### 📋 1-Click Gemini Deep-Dive Prompt (Porter's + SOTP + Kill-Switch)")
             prompt_text = (
-                f"Perform a full cyclical research audit on NSE:{stock_choice} ({row_data['Theme / Sector']}). "
+                f"Perform a full cyclical research audit on NSE:{stock_choice} ({row_data['Cyclical Sector']}). "
                 f"Stage: {row_data['Stage']} | Duration: {row_data['Stage Duration']} | RS Rating: {row_data['RS Rating']}/99 | "
                 f"CMP: ₹{row_data['CMP (₹)']} | 40W EMA Stop: ₹{row_data['40W EMA Stop (₹)']}. "
                 f"Please run: (1) Porter's Five Forces & Chinese dumping/moat check, (2) Segment-wise SOTP Valuation, "
