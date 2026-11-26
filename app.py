@@ -43,15 +43,15 @@ def send_shortlist_to_telegram(df):
     for _, r in top.iterrows():
         lines.append(
             f"• *{r['Symbol']}* (Score: {int(r['Score'])})\n"
-            f"  CMP: ₹{r['CMP (₹)']} | SL: ₹{r['Stop-Loss Zone (₹)']} | {r['Entry Zone']}"
+            f"  CMP: ₹{r['CMP (₹)']} | SL: ₹{r['Stop-Loss Zone (₹)']} | CFO/PAT: {r['CFO/PAT']} | {r['Entry Zone']}"
         )
     return send_telegram_message("\n".join(lines))
 
 
 st.title("🔄 Cycle Investing Search Engine")
 st.caption(
-    "Whole-market NSE engine for realistic Entry Zones (capital-cycle troughs + flattening/curling 40W EMA + bullish volume) "
-    "and realistic Exit Zones (staggered euphoria trims + 40W EMA trailing stop)."
+    "Whole-market NSE engine combining Capital-Cycle Troughs, 3Y P/B Bands, Multi-Year CFO/PAT Forensics, "
+    "Capex Supply Checks, 40-Week EMA Bases, and Realistic Exit Zones."
 )
 
 # Quick 2-second Telegram Test Button
@@ -125,7 +125,7 @@ with main_tab1:
     if "results" in st.session_state:
         df = st.session_state["results"]
         if df.empty:
-            st.warning("No stocks passed all 4 institutional cyclical pillars today.")
+            st.warning("No stocks passed all institutional cyclical pillars today.")
         else:
             st.info(f"**Universe Scanned:** {st.session_state.get('source_label', 'NSE Whole Market')}")
 
@@ -147,14 +147,14 @@ with main_tab1:
             sector_counts["Avg_Score"] = sector_counts["Avg_Score"].round(1)
 
             st.subheader("📡 Sector-Cycle Cluster Radar")
-            st.caption("Sectors with 3+ stocks basing together signal an industry-wide capital-cycle turn.")
+            st.caption("Industries with 3+ stocks basing together signal a genuine capital-cycle turn.")
             st.dataframe(sector_counts, use_container_width=True, hide_index=True)
 
             display_cols = [
                 "Symbol", "Score", "Entry Zone", "Sector", "CMP (₹)", "Base Pivot (₹)",
-                "Drawdown %", "vs 40W EMA %", "40W Slope", "12W Base %", "Vol Surge (x)",
-                "P/B", "D/E", "CFO", "Forensic Check", "Stop-Loss Zone (₹)", "Risk %",
-                "Screener", "TradingView",
+                "Drawdown %", "3Y P/B Band", "P/B", "CFO/PAT", "Capex Cycle", "D/E",
+                "Insider %", "Forensic Check", "vs 40W EMA %", "40W Slope", "Vol Surge (x)",
+                "Stop-Loss Zone (₹)", "Risk %", "Screener", "TradingView",
             ]
 
             col_cfg = {
@@ -180,7 +180,7 @@ with main_tab1:
                 else:
                     st.dataframe(tier2[display_cols], use_container_width=True, hide_index=True, column_config=col_cfg)
 
-            csv = df.drop(columns=["Ticker", "TechScore"]).to_csv(index=False).encode("utf-8")
+            csv = df.drop(columns=["Ticker", "TechScore", "PB_Band_Pct"]).to_csv(index=False).encode("utf-8")
             st.download_button(
                 "📥 Download Full Research Shortlist (CSV)",
                 data=csv,
