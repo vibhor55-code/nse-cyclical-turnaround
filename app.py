@@ -5,6 +5,7 @@ from scanner_engine import (
     get_whole_market_symbols,
     parse_screener_csv,
     run_cycle_search_engine,
+    generate_executive_sector_report,
     evaluate_holdings_exit_zones,
 )
 
@@ -36,21 +37,24 @@ def send_telegram_message(text):
         return False, f"Connection error: {e}"
 
 
-def send_shortlist_to_telegram(df):
-    """Format top 10 cyclical setups and send to Telegram."""
-    top = df.head(10)
-    lines = ["🔄 *Cycle Investing Alert — Top Setups*\n"]
-    for _, r in top.iterrows():
+def send_executive_report_to_telegram(df, sector_brief):
+    """Send Executive Sector Cycle Brief + Top 8 Setups to Telegram."""
+    lines = ["📋 *EXECUTIVE SECTOR CYCLE BRIEF*\n"]
+    for item in sector_brief[:5]:
+        lines.append(item["tg_bullet"])
+
+    lines.append("\n🔥 *TOP CYCLICAL SETUPS*")
+    for _, r in df.head(8).iterrows():
         lines.append(
-            f"• *{r['Symbol']}* (Score: {int(r['Score'])})\n"
-            f"  CMP: ₹{r['CMP (₹)']} | SL: ₹{r['Stop-Loss Zone (₹)']} | CFO/PAT: {r['CFO/PAT']} | {r['Entry Zone']}"
+            f"• *{r['Symbol']}* (Score {int(r['Score'])}) | ₹{r['CMP (₹)']} | SL ₹{r['Stop-Loss Zone (₹)']} | {r['Entry Zone']}"
         )
+
     return send_telegram_message("\n".join(lines))
 
 
 st.title("🔄 Cycle Investing Search Engine")
 st.caption(
-    "Whole-market NSE engine combining Capital-Cycle Troughs, 3Y P/B Bands, Multi-Year CFO/PAT Forensics, "
+    "Whole-market NSE engine combining Executive Sector Cycle Briefs, 3Y P/B Bands, Multi-Year CFO/PAT Forensics, "
     "Capex Supply Checks, 40-Week EMA Bases, and Realistic Exit Zones."
 )
 
@@ -90,137 +94,9 @@ with main_tab1:
             st.session_state["results"] = results_df
 
             if not results_df.empty:
-                ok, tg_msg = send_shortlist_to_telegram(results_df)
+                sector_brief = generate_executive_sector_report(results_df)
+                st.session_state["sector_brief"] = sector_brief
+                ok, tg_msg = send_executive_report_to_telegram(results_df, sector_brief)
                 if ok:
                     st.success(f"📲 {tg_msg}")
-                else:
-                    st.warning(f"Scan finished, but Telegram failed: {tg_msg}")
-
-    # Backup CSV loader (only shows if NSE blocks cloud server IP)
-    if st.session_state.get("nse_blocked", False):
-        uploaded = st.file_uploader("Upload NSE or Screener.in CSV to run the scan", type=["csv"])
-        if uploaded and st.button("Scan Uploaded CSV", type="primary"):
-            tickers, source_label = parse_screener_csv(uploaded)
-            if not tickers:
-                st.error(source_label)
-            else:
-                st.session_state["source_label"] = source_label
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                results_df = run_cycle_search_engine(
-                    tickers,
-                    progress_callback=lambda p, m: (progress_bar.progress(min(max(p, 0.0), 1.0)), status_text.text(m)),
-                )
-                progress_bar.empty()
-                status_text.empty()
-                st.session_state["results"] = results_df
-
-                if not results_df.empty:
-                    ok, tg_msg = send_shortlist_to_telegram(results_df)
-                    if ok:
-                        st.success(f"📲 {tg_msg}")
-                    else:
-                        st.warning(f"Scan finished, but Telegram failed: {tg_msg}")
-
-    if "results" in st.session_state:
-        df = st.session_state["results"]
-        if df.empty:
-            st.warning("No stocks passed all institutional cyclical pillars today.")
-        else:
-            st.info(f"**Universe Scanned:** {st.session_state.get('source_label', 'NSE Whole Market')}")
-
-            tier1 = df[df["Tier"] == "Tier 1: Actionable Entry Zone"]
-            tier2 = df[df["Tier"] == "Tier 2: Base Watchlist"]
-
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Total Cyclical Survivors", len(df))
-            c2.metric("Tier 1 (Active Entry Zones)", len(tier1))
-            c3.metric("Tier 2 (Base Watchlist)", len(tier2))
-
-            # Sector-Cycle Cluster Radar
-            sector_counts = (
-                df.groupby("Sector")
-                .agg(Stocks=("Symbol", "count"), Avg_Score=("Score", "mean"))
-                .reset_index()
-                .sort_values(by=["Stocks", "Avg_Score"], ascending=[False, False])
-            )
-            sector_counts["Avg_Score"] = sector_counts["Avg_Score"].round(1)
-
-            st.subheader("📡 Sector-Cycle Cluster Radar")
-            st.caption("Industries with 3+ stocks basing together signal a genuine capital-cycle turn.")
-            st.dataframe(sector_counts, use_container_width=True, hide_index=True)
-
-            display_cols = [
-                "Symbol", "Score", "Entry Zone", "Sector", "CMP (₹)", "Base Pivot (₹)",
-                "Drawdown %", "3Y P/B Band", "P/B", "CFO/PAT", "Capex Cycle", "D/E",
-                "Insider %", "Forensic Check", "vs 40W EMA %", "40W Slope", "Vol Surge (x)",
-                "Stop-Loss Zone (₹)", "Risk %", "Screener", "TradingView",
-            ]
-
-            col_cfg = {
-                "Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%.0f"),
-                "Screener": st.column_config.LinkColumn("Screener", display_text="Open"),
-                "TradingView": st.column_config.LinkColumn("Chart", display_text="View"),
-            }
-
-            sub1, sub2 = st.tabs([
-                f"🔥 Tier 1: Active Entry Zones ({len(tier1)})",
-                f"👀 Tier 2: Base Watchlist ({len(tier2)})",
-            ])
-
-            with sub1:
-                if tier1.empty:
-                    st.write("No Tier 1 active entries right now—check Tier 2 for bases building near the 40W EMA.")
-                else:
-                    st.dataframe(tier1[display_cols], use_container_width=True, hide_index=True, column_config=col_cfg)
-
-            with sub2:
-                if tier2.empty:
-                    st.write("No Tier 2 watchlist setups right now.")
-                else:
-                    st.dataframe(tier2[display_cols], use_container_width=True, hide_index=True, column_config=col_cfg)
-
-            csv = df.drop(columns=["Ticker", "TechScore", "PB_Band_Pct"]).to_csv(index=False).encode("utf-8")
-            st.download_button(
-                "📥 Download Full Research Shortlist (CSV)",
-                data=csv,
-                file_name="cycle_investing_shortlist.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
-
-# ==========================================
-# TAB 2: MY HOLDINGS — EXIT ZONE MONITOR
-# ==========================================
-with main_tab2:
-    st.subheader("🛡️ Cyclical Holdings Exit Zone Monitor")
-    st.caption(
-        "Enter your current cyclical holdings (NSE symbols separated by commas) to check whether to "
-        "**HOLD**, **TRIM (Euphoria Zone)**, or **EXIT (40W EMA Broken)**."
-    )
-
-    holdings_input = st.text_area(
-        "Enter NSE Symbols (comma-separated)",
-        placeholder="Example: SBIN, TATASTEEL, GPPL, HEG, HDFCAMC",
-        height=80,
-    )
-
-    if st.button("Check Exit Zones", type="primary"):
-        symbols = [s.strip() for s in holdings_input.split(",") if s.strip()]
-        if not symbols:
-            st.warning("Please enter at least one NSE symbol.")
-        else:
-            with st.spinner("Evaluating weekly trends & 40-Week EMA exit zones..."):
-                exit_df = evaluate_holdings_exit_zones(symbols)
-
-            if exit_df.empty:
-                st.error("Could not fetch data for those symbols. Double-check the NSE spellings.")
-            else:
-                st.dataframe(
-                    exit_df,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "TradingView": st.column_config.LinkColumn("Chart", display_text="View"),
-                    },
-                )
+                else
