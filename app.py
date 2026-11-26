@@ -1,5 +1,30 @@
 import streamlit as st
 import pandas as pd
+import requests
+
+def send_telegram_alert(df):
+    token = st.secrets.get("TELEGRAM_TOKEN", "")
+    chat_id = st.secrets.get("TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        return False, "Missing TELEGRAM_TOKEN or TELEGRAM_CHAT_ID in Streamlit Secrets."
+    
+    top = df.head(10)
+    lines = ["🔄 *Cycle Investing Alert — Top Setups*\n"]
+    for _, r in top.iterrows():
+        lines.append(
+            f"• *{r['Symbol']}* (Score: {int(r['Score'])})\n"
+            f"  CMP: ₹{r['CMP (₹)']} | SL: ₹{r['Stop-Loss Zone (₹)']} | {r['Entry Zone']}"
+        )
+    msg = "\n".join(lines)
+    
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    try:
+        res = requests.post(url, data={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"}, timeout=10)
+        if res.status_code == 200:
+            return True, "Sent to Telegram!"
+        return False, res.text
+    except Exception as e:
+        return False, str(e)
 from scanner_engine import (
     get_whole_market_symbols,
     parse_screener_csv,
