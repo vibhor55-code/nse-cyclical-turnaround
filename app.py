@@ -99,4 +99,4 @@ with main_tab1:
                 ok, tg_msg = send_executive_report_to_telegram(results_df, sector_brief)
                 if ok:
                     st.success(f"📲 {tg_msg}")
-                else
+                else:
