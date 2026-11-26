@@ -5,17 +5,34 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 
-# Pure defensive sectors excluded automatically
-DEFENSIVE_SECTORS = {
-    "Consumer Defensive",
-    "Healthcare",
-    "Technology",
-    "Communication Services",
-    "Utilities",
+# Exclude only pure non-cyclical industries so Sugar, Paper, Polyfilms, Cement, Metals, Graphite all pass
+NON_CYCLICAL_INDUSTRIES = {
+    "Household & Personal Products",
+    "Tobacco",
+    "Beverages - Non-Alcoholic",
+    "Grocery Stores",
+    "Discount Stores",
+    "Drug Manufacturers - General",
+    "Drug Manufacturers - Specialty & Generic",
+    "Biotechnology",
+    "Medical Care Facilities",
+    "Diagnostics & Research",
+    "Software - Application",
+    "Software - Infrastructure",
+    "Information Technology Services",
+    "Telecom Services",
+    "Utilities - Regulated Electric",
+    "Utilities - Regulated Gas",
+    "Utilities - Regulated Water",
 }
 
-# Official whole-market NSE CSV sources (zero hardcoded stocks)
+# Official whole-market NSE CSV sources (All NSE Equities first so small-cap cyclicals are included)
 NSE_UNIVERSE_SOURCES = [
+    (
+        "All NSE Listed Equities (Whole Market)",
+        "https://archives.nseindia.com/content/equities/EQUITY_L.csv",
+        "SYMBOL",
+    ),
     (
         "NSE Nifty Total Market (750 Stocks)",
         "https://archives.nseindia.com/content/indices/ind_niftytotalmarket_list.csv",
@@ -25,11 +42,6 @@ NSE_UNIVERSE_SOURCES = [
         "NSE Nifty 500",
         "https://archives.nseindia.com/content/indices/ind_nifty500list.csv",
         "Symbol",
-    ),
-    (
-        "All NSE Listed Equities",
-        "https://archives.nseindia.com/content/equities/EQUITY_L.csv",
-        "SYMBOL",
     ),
 ]
 
@@ -47,6 +59,9 @@ def get_whole_market_symbols():
             df = pd.read_csv(io.StringIO(r.text))
             df.columns = df.columns.str.strip()
             if col_name in df.columns:
+                # For EQUITY_L.csv, keep only active EQ series stocks if SERIES column exists
+                if "SERIES" in df.columns:
+                    df = df[df["SERIES"].astype(str).str.strip() == "EQ"]
                 symbols = df[col_name].dropna().astype(str).str.strip().unique().tolist()
                 symbols = [s for s in symbols if s and s.lower() != "nan"]
                 if len(symbols) >= 100:
@@ -84,15 +99,18 @@ def _extract_ticker_df(data, ticker, batch_len):
 
 def _score_technical_setup(drawdown_pct, base_range_pct, vol_ratio, dist_ema40_pct, ema40_slope_pct):
     """Institutional 0-80 technical score (20 more points added in Stage 2 forensic audit)."""
-    depth_pts = min(20.0, max(0.0, (drawdown_pct - 25) * 0.5))
-    tight_pts = min(20.0, max(0.0, (38 - base_range_pct) * 0.8))
-    vol_pts = min(20.0, max(0.0, (vol_ratio - 1.0) * 12.0))
-
+    # 1. Cycle Depth (max 20 pts): rewards 20%-65% cyclical resets
+    depth_pts = min(20.0, max(0.0, (drawdown_pct - 15) * 0.45))
+    # 2. Base Tightness (max 20 pts): rewards tight 12W consolidations
+    tight_pts = min(20.0, max(0.0, (40 - base_range_pct) * 0.75))
+    # 3. Bullish Volume Accumulation (max 20 pts): bonus for volume surge, doesn't kill quiet bases
+    vol_pts = min(20.0, max(0.0, (vol_ratio - 0.6) * 11.0))
+    # 4. 40W EMA Position + Slope (max 20 pts)
     if 0 <= dist_ema40_pct <= 8 and ema40_slope_pct >= 0:
         ema_pts = 20.0
-    elif 0 <= dist_ema40_pct <= 12:
+    elif 0 <= dist_ema40_pct <= 14:
         ema_pts = 16.0
-    elif -6 <= dist_ema40_pct < 0 and ema40_slope_pct >= -1.0:
+    elif -8 <= dist_ema40_pct < 0 and ema40_slope_pct >= -1.2:
         ema_pts = 14.0
     else:
         ema_pts = 8.0
@@ -103,7 +121,7 @@ def _score_technical_setup(drawdown_pct, base_range_pct, vol_ratio, dist_ema40_p
 def run_cycle_search_engine(tickers, progress_callback=None):
     """
     Fully automated 2-Stage Institutional Cycle Investing Search Engine.
-    Identifies realistic Entry Zones, Stop-Loss Zones, and Sector Clusters.
+    Covers all cyclical sectors across the entire NSE market.
     """
     stage1 = []
     batch_size = 50
@@ -116,7 +134,7 @@ def run_cycle_search_engine(tickers, progress_callback=None):
         if progress_callback:
             progress_callback(
                 (batch_num / total_batches) * 0.65,
-                f"Stage 1/2: Scanning whole market for cyclical bases (Batch {batch_num}/{total_batches})...",
+                f"Stage 1/2: Scanning whole NSE market for cyclical bases (Batch {batch_num}/{total_batches})...",
             )
 
         try:
@@ -159,13 +177,13 @@ def run_cycle_search_engine(tickers, progress_callback=None):
                 if (avg_vol_20w * cmp) < 2e7:
                     continue
 
-                # Pillar 1: Deep Capital-Cycle Trough (30% to 78% off 3Y high, stabilized above 52W low)
+                # Pillar 1: Cyclical Reset (20% to 78% off 3Y high, stabilized above 52W low)
                 drawdown_pct = ((high_3y - cmp) / high_3y) * 100
-                if not (30 <= drawdown_pct <= 78):
+                if not (20 <= drawdown_pct <= 78):
                     continue
 
                 above_52w_low_pct = ((cmp - low_52w) / low_52w) * 100
-                if not (3 <= above_52w_low_pct <= 50):
+                if not (2 <= above_52w_low_pct <= 55):
                     continue
 
                 # Pillar 2: 40-Week EMA Proximity & Slope (Rejects steep falling-knife bull traps)
@@ -178,9 +196,9 @@ def run_cycle_search_engine(tickers, progress_callback=None):
                 dist_ema40_pct = ((cmp - ema40_now) / ema40_now) * 100
                 ema40_slope_pct = ((ema40_now - ema40_8w_ago) / ema40_8w_ago) * 100
 
-                if not (-10 <= dist_ema40_pct <= 15):
+                if not (-12 <= dist_ema40_pct <= 15):
                     continue
-                if ema40_slope_pct < -2.0:
+                if ema40_slope_pct < -2.5:
                     continue
 
                 ema_trend = "Curling Up" if ema40_slope_pct >= 0.3 else "Flattening"
@@ -189,12 +207,12 @@ def run_cycle_search_engine(tickers, progress_callback=None):
                 high_12w = float(high.tail(12).max())
                 low_12w = float(low.tail(12).min())
                 base_range_pct = ((high_12w - low_12w) / low_12w) * 100
-                if base_range_pct > 38:
+                if base_range_pct > 40:
                     continue
 
-                # Pillar 3: Institutional Bullish Volume Accumulation (green or upper-half close)
+                # Pillar 3: Bullish Volume Accumulation (checks last 4 weeks; quiet bases still pass to Tier 2)
                 best_bull_vol = 0.0
-                for _, wk in df.tail(2).iterrows():
+                for _, wk in df.tail(4).iterrows():
                     wk_h, wk_l, wk_c, wk_o, wk_v = (
                         float(wk["High"]),
                         float(wk["Low"]),
@@ -206,17 +224,15 @@ def run_cycle_search_engine(tickers, progress_callback=None):
                         best_bull_vol = max(best_bull_vol, wk_v)
 
                 vol_ratio = best_bull_vol / avg_vol_20w if avg_vol_20w > 0 else 0
-                if vol_ratio < 1.2:
-                    continue
 
                 # Realistic Entry Zone Classification
                 dist_to_pivot_pct = ((high_12w - cmp) / cmp) * 100
-                if cmp >= ema40_now and dist_to_pivot_pct <= 4.0:
+                if cmp >= ema40_now and dist_to_pivot_pct <= 4.5 and vol_ratio >= 1.2:
                     entry_zone = "Active Entry Zone"
                 elif cmp >= ema40_now * 0.96:
                     entry_zone = f"Near Pivot (₹{round(high_12w, 1)})"
                 else:
-                    entry_zone = "Early Base Building"
+                    entry_zone = "Quiet Base Building"
 
                 # Realistic Stop-Loss Zone (lower of 40W EMA or 12W Base Low)
                 sl_candidate = min(ema40_now, low_12w) if ema40_now < cmp else low_12w
@@ -254,8 +270,10 @@ def run_cycle_search_engine(tickers, progress_callback=None):
     if not stage1:
         return pd.DataFrame()
 
-    # --- STAGE 2: FORENSIC AUDIT (BANK/NBFC AWARE + HONEST DATA FLAGS) ---
-    s1_df = pd.DataFrame(stage1)
+    # Keep top 80 technical setups for Stage 2 so Yahoo Finance stays fast and never times out
+    s1_df = pd.DataFrame(stage1).sort_values(by="TechScore", ascending=False).head(80)
+
+    # --- STAGE 2: FORENSIC AUDIT (ALL CYCLE SECTORS + BANK/NBFC AWARE) ---
     final_rows = []
     total = len(s1_df)
 
@@ -263,12 +281,13 @@ def run_cycle_search_engine(tickers, progress_callback=None):
         if progress_callback:
             progress_callback(
                 0.65 + ((idx + 1) / total) * 0.35,
-                f"Stage 2/2: Forensic & sector audit on {row['Symbol']} ({idx + 1}/{total})...",
+                f"Stage 2/2: Forensic & industry audit on {row['Symbol']} ({idx + 1}/{total})...",
             )
 
         try:
             info = yf.Ticker(row["Ticker"]).info
             sector = info.get("sector", "Unknown")
+            industry = info.get("industry", "Unknown")
             pb = info.get("priceToBook", None)
             de = info.get("debtToEquity", None)
             de_ratio = round(de / 100.0, 2) if de is not None else None
@@ -276,12 +295,16 @@ def run_cycle_search_engine(tickers, progress_callback=None):
             mcap = info.get("marketCap", None)
             mcap_cr = round(mcap / 1e7, 0) if mcap else None
         except Exception:
-            sector, pb, de_ratio, cfo, mcap_cr = "Unknown", None, None, None, None
+            sector, industry, pb, de_ratio, cfo, mcap_cr = "Unknown", "Unknown", None, None, None, None
 
         time.sleep(0.15)
 
-        if sector in DEFENSIVE_SECTORS:
+        # Exclude only pure non-cyclical industries (keeps Sugar, Paper, Polyfilms, Cement, Metals, Graphite)
+        if industry in NON_CYCLICAL_INDUSTRIES:
             continue
+
+        # Show exact Industry in Sector column so Cement, Paper, Sugar, Steel, Packaging are clearly visible
+        sector_label = f"{sector} — {industry}" if industry != "Unknown" else sector
 
         is_financial = sector == "Financial Services"
         flags = []
@@ -332,7 +355,7 @@ def run_cycle_search_engine(tickers, progress_callback=None):
         forensic_note = "Clean" if not flags else " | ".join(flags)
         total_score = round(min(100.0, row["TechScore"] + fund_pts), 1)
 
-        if total_score >= 70 and row["Entry Zone"] == "Active Entry Zone":
+        if total_score >= 68 and row["Entry Zone"] == "Active Entry Zone":
             tier = "Tier 1: Actionable Entry Zone"
         else:
             tier = "Tier 2: Base Watchlist"
@@ -340,7 +363,7 @@ def run_cycle_search_engine(tickers, progress_callback=None):
         rec = row.to_dict()
         rec["Score"] = total_score
         rec["Tier"] = tier
-        rec["Sector"] = sector
+        rec["Sector"] = sector_label
         rec["Mkt Cap (Cr)"] = mcap_cr
         rec["P/B"] = round(pb, 2) if pb else None
         rec["D/E"] = de_display
