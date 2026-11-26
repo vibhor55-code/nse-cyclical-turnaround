@@ -1,146 +1,272 @@
-import streamlit as st
+import io
+import time
+import requests
 import pandas as pd
-from scanner_engine import (
-    DEFENSIVE_SECTORS,
-    get_whole_market_symbols,
-    parse_screener_csv,
-    scan_price_bases,
-    enrich_fundamentals,
-)
+import numpy as np
+import yfinance as yf
 
-st.set_page_config(
-    page_title="NSE Cyclical Turnaround Scanner",
-    page_icon="🔄",
-    layout="wide",
-)
+DEFENSIVE_SECTORS = {
+    "Consumer Defensive",
+    "Healthcare",
+    "Technology",
+    "Communication Services",
+    "Utilities",
+}
 
-st.title("🔄 NSE Cyclical Turnaround & Base Scanner")
-st.caption("Whole-market scanner for deep-cycle troughs, tight Stage 1/2 bases, bullish volume accumulation, and 40W EMA position sizing.")
+# Official whole-market NSE CSV sources (zero hardcoded stocks)
+NSE_UNIVERSE_SOURCES = [
+    (
+        "NSE Nifty Total Market (750 Stocks)",
+        "https://archives.nseindia.com/content/indices/ind_niftytotalmarket_list.csv",
+        "Symbol",
+    ),
+    (
+        "NSE Nifty 500",
+        "https://archives.nseindia.com/content/indices/ind_nifty500list.csv",
+        "Symbol",
+    ),
+    (
+        "All NSE Listed Equities",
+        "https://archives.nseindia.com/content/equities/EQUITY_L.csv",
+        "SYMBOL",
+    ),
+]
 
-# --- SIDEBAR CONTROLS ---
-with st.sidebar:
-    st.header("1. Stock Universe")
-    universe_mode = st.radio("Universe", ["Whole Market (NSE Auto)", "Upload Screener.in CSV"])
-    uploaded_file = None
-    if universe_mode == "Upload Screener.in CSV":
-        uploaded_file = st.file_uploader("Upload CSV ('Symbol' or 'NSE Code')", type=["csv"])
 
-    st.header("2. Scan Filters (Requires Re-Scan)")
-    min_drawdown = st.slider("Min Drawdown from 3Y High (%)", 20, 75, 35, step=5)
-    max_above_52w = st.slider("Max % Above 52W Low (Base Zone)", 10, 100, 45, step=5)
-    ema_mode = st.selectbox(
-        "40-Week EMA Filter",
-        [
-            "Reclaiming / Near 40W EMA (-10% to +15%)",
-            "Above 40W EMA Only",
-            "Any (Show All Bases)",
-        ],
-    )
-    min_vol_ratio = st.slider("Min Bullish Volume Surge (x 20W Avg)", 0.8, 3.0, 1.2, step=0.1)
+def get_whole_market_symbols():
+    """Fetch whole-market NSE symbols from official NSE CSVs."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "text/csv,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    for label, url, col_name in NSE_UNIVERSE_SOURCES:
+        try:
+            r = requests.get(url, headers=headers, timeout=12)
+            r.raise_for_status()
+            df = pd.read_csv(io.StringIO(r.text))
+            df.columns = df.columns.str.strip()
+            if col_name in df.columns:
+                symbols = df[col_name].dropna().astype(str).str.strip().unique().tolist()
+                symbols = [s for s in symbols if s and s.lower() != "nan"]
+                if len(symbols) >= 100:
+                    return [f"{s}.NS" for s in symbols], f"{label} ({len(symbols)} stocks)"
+        except Exception:
+            continue
 
-    st.divider()
-    st.header("3. Live Filters & Sizing (Instant)")
-    pure_cyclicals = st.toggle("Pure Cyclicals Only (Exclude Defensives)", value=True)
-    max_de = st.slider("Max Debt-to-Equity", 0.5, 5.0, 1.5, step=0.25)
-    capital = st.number_input("Portfolio Capital (₹)", min_value=50000, value=1000000, step=50000)
-    risk_per_trade = st.slider("Max Risk per Trade (%)", 0.5, 3.0, 1.5, step=0.25)
-    max_alloc_pct = st.slider("Max Allocation per Stock (%)", 5, 30, 20, step=5)
+    return [], "NSE blocked the cloud server request. Please switch to 'Upload Screener.in CSV' in the sidebar."
 
-# --- RUN SCAN BUTTON ---
-if st.button("🚀 Run Cyclical Scan", type="primary", use_container_width=True):
-    if universe_mode == "Upload Screener.in CSV":
-        if not uploaded_file:
-            st.warning("Please upload a Screener.in CSV file first.")
-            st.stop()
-        tickers, source_label = parse_screener_csv(uploaded_file)
+
+def parse_screener_csv(uploaded_file):
+    """Extract NSE tickers from a Screener.in or NSE CSV export."""
+    df = pd.read_csv(uploaded_file)
+    df.columns = df.columns.str.strip()
+    col = None
+    for candidate in ["NSE Code", "Symbol", "SYMBOL", "Ticker", "symbol", "NSE"]:
+        if candidate in df.columns:
+            col = candidate
+            break
+    if not col:
+        return [], "Error: CSV must have an 'NSE Code' or 'Symbol' column."
+    syms = df[col].dropna().astype(str).str.strip().unique().tolist()
+    tickers = [s if s.endswith(".NS") else f"{s}.NS" for s in syms if s and s.lower() != "nan"]
+    return tickers, f"Uploaded CSV ({len(tickers)} stocks)"
+
+
+def score_setup(drawdown_pct, base_range_pct, vol_ratio, dist_ema40_pct):
+    """Calculate a 0-100 Cyclical Turnaround Quality Score."""
+    depth_pts = min(25.0, max(0.0, (drawdown_pct - 20) * 0.6))
+    tight_pts = min(25.0, max(0.0, (40 - base_range_pct) * 0.85))
+    vol_pts = min(25.0, max(0.0, (vol_ratio - 0.8) * 12.5))
+
+    if 0 <= dist_ema40_pct <= 8:
+        ema_pts = 25.0
+    elif -8 <= dist_ema40_pct < 0:
+        ema_pts = 18.0
+    elif 8 < dist_ema40_pct <= 15:
+        ema_pts = 15.0
     else:
-        tickers, source_label = get_whole_market_symbols()
+        ema_pts = 5.0
 
-    if not tickers:
-        st.error(source_label)
-        st.stop()
+    return round(depth_pts + tight_pts + vol_pts + ema_pts, 1)
 
-    st.session_state["source_label"] = source_label
-    progress_bar = st.progress(0)
-    status_text = st.empty()
 
-    def update_progress(pct, msg):
-        progress_bar.progress(min(max(pct, 0.0), 1.0))
-        status_text.text(msg)
+def _extract_ticker_df(data, ticker, batch_len):
+    """Safely extract single-ticker OHLCV DataFrame across all yfinance versions."""
+    if data is None or data.empty:
+        return pd.DataFrame()
 
-    stage1_df = scan_price_bases(
-        tickers,
-        min_drawdown=min_drawdown,
-        max_above_52w_low=max_above_52w,
-        min_vol_ratio=min_vol_ratio,
-        ema_mode=ema_mode,
-        progress_callback=update_progress,
-    )
+    if batch_len == 1:
+        df = data.copy()
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        return df
 
-    if stage1_df.empty:
-        progress_bar.empty()
-        status_text.empty()
-        st.session_state["raw_results"] = pd.DataFrame()
-        st.warning("No stocks matched Stage 1 price/base filters. Try lowering Drawdown or Volume Surge.")
-    else:
-        enriched_df = enrich_fundamentals(stage1_df, progress_callback=update_progress)
-        progress_bar.empty()
-        status_text.empty()
-        st.session_state["raw_results"] = enriched_df
+    if isinstance(data.columns, pd.MultiIndex):
+        lvl0 = data.columns.get_level_values(0)
+        if ticker in lvl0:
+            return data[ticker].copy()
+    return pd.DataFrame()
 
-# --- DISPLAY RESULTS (UPDATES INSTANTLY WHEN LIVE FILTERS CHANGE) ---
-if "raw_results" in st.session_state and not st.session_state["raw_results"].empty:
-    df = st.session_state["raw_results"].copy()
-    st.info(f"**Universe Scanned:** {st.session_state.get('source_label', 'NSE')}")
 
-    # Apply Instant Filters
-    if pure_cyclicals:
-        df = df[~df["Sector"].isin(DEFENSIVE_SECTORS)]
-    df = df[(df["D/E"].isna()) | (df["D/E"] <= max_de)]
+def scan_price_bases(
+    tickers,
+    min_drawdown=30,
+    max_above_52w_low=45,
+    min_vol_ratio=1.2,
+    ema_mode="Reclaiming / Near 40W EMA (-10% to +15%)",
+    progress_callback=None,
+):
+    """Stage 1: Fast batch download of 3Y weekly data to find cyclical bases."""
+    results = []
+    batch_size = 50
+    total_batches = max(1, (len(tickers) + batch_size - 1) // batch_size)
 
+    for i in range(0, len(tickers), batch_size):
+        batch = tickers[i : i + batch_size]
+        batch_num = (i // batch_size) + 1
+
+        if progress_callback:
+            progress_callback(batch_num / total_batches, f"Stage 1: Scanning prices (Batch {batch_num}/{total_batches})...")
+
+        try:
+            data = yf.download(
+                batch,
+                period="3y",
+                interval="1wk",
+                group_by="ticker",
+                auto_adjust=True,
+                progress=False,
+                threads=True,
+            )
+        except Exception:
+            continue
+
+        for ticker in batch:
+            try:
+                df = _extract_ticker_df(data, ticker, len(batch))
+                if df.empty or not {"Open", "High", "Low", "Close", "Volume"}.issubset(df.columns):
+                    continue
+
+                df = df.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
+                if len(df) < 55:
+                    continue
+
+                open_p = df["Open"].squeeze()
+                high = df["High"].squeeze()
+                low = df["Low"].squeeze()
+                close = df["Close"].squeeze()
+                vol = df["Volume"].squeeze()
+
+                cmp = float(close.iloc[-1])
+                high_3y = float(high.max())
+                low_52w = float(low.tail(52).min())
+
+                if high_3y <= 0 or low_52w <= 0 or cmp <= 0:
+                    continue
+
+                # Liquidity filter: skip illiquid stocks (< ₹2 Cr avg weekly turnover)
+                avg_vol_20w = float(vol.tail(20).mean())
+                if (avg_vol_20w * cmp) < 2e7:
+                    continue
+
+                # 1. Cyclical Drawdown
+                drawdown_pct = ((high_3y - cmp) / high_3y) * 100
+                if drawdown_pct < min_drawdown:
+                    continue
+
+                # 2. Base Zone
+                above_52w_low_pct = ((cmp - low_52w) / low_52w) * 100
+                if above_52w_low_pct < 2 or above_52w_low_pct > max_above_52w_low:
+                    continue
+
+                # 3. 40-Week EMA
+                ema40 = float(close.ewm(span=40, adjust=False).mean().iloc[-1])
+                dist_ema40_pct = ((cmp - ema40) / ema40) * 100
+
+                if ema_mode == "Above 40W EMA Only" and cmp < ema40:
+                    continue
+                elif ema_mode == "Reclaiming / Near 40W EMA (-10% to +15%)" and not (-10 <= dist_ema40_pct <= 15):
+                    continue
+
+                # 4. Bullish Volume Accumulation (last 2 weeks: must be green or close in upper half)
+                recent_df = df.tail(2)
+                best_bull_vol = 0.0
+                for _, wk in recent_df.iterrows():
+                    wk_h, wk_l, wk_c, wk_o, wk_v = float(wk["High"]), float(wk["Low"]), float(wk["Close"]), float(wk["Open"]), float(wk["Volume"])
+                    mid_range = (wk_h + wk_l) / 2.0
+                    if wk_c >= wk_o or wk_c >= mid_range:
+                        best_bull_vol = max(best_bull_vol, wk_v)
+
+                vol_ratio = best_bull_vol / avg_vol_20w if avg_vol_20w > 0 else 0
+                if vol_ratio < min_vol_ratio:
+                    continue
+
+                # 5. 12-Week Base Tightness & Stop-Loss
+                high_12w = float(high.tail(12).max())
+                low_12w = float(low.tail(12).min())
+                base_range_pct = ((high_12w - low_12w) / low_12w) * 100
+
+                sl_candidate = min(ema40, low_12w) if ema40 < cmp else low_12w
+                if sl_candidate >= cmp:
+                    sl_candidate = cmp * 0.92
+                sl_price = round(sl_candidate, 2)
+                risk_pct = round(((cmp - sl_price) / cmp) * 100, 1)
+
+                score = score_setup(drawdown_pct, base_range_pct, vol_ratio, dist_ema40_pct)
+                sym = ticker.replace(".NS", "")
+
+                results.append({
+                    "Symbol": sym,
+                    "Ticker": ticker,
+                    "Score": score,
+                    "CMP (₹)": round(cmp, 2),
+                    "Drawdown %": round(drawdown_pct, 1),
+                    "40W EMA (₹)": round(ema40, 2),
+                    "vs 40W EMA %": round(dist_ema40_pct, 1),
+                    "12W Base %": round(base_range_pct, 1),
+                    "Vol Surge (x)": round(vol_ratio, 2),
+                    "Stop-Loss (₹)": sl_price,
+                    "Risk %": risk_pct,
+                    "Screener": f"https://www.screener.in/company/{sym}/consolidated/",
+                    "TradingView": f"https://www.tradingview.com/chart/?symbol=NSE%3A{sym}",
+                })
+            except Exception:
+                continue
+
+    return pd.DataFrame(results)
+
+
+def enrich_fundamentals(df, progress_callback=None):
+    """Stage 2: Fetch Sector, Market Cap, P/B, and Debt/Equity for Stage 1 survivors."""
     if df.empty:
-        st.warning("All scanned stocks were filtered out by Sector or Debt/Equity limits. Adjust Section 3 sliders in the sidebar.")
-    else:
-        # Position Sizing with Max Allocation Cap
-        risk_rupees = capital * (risk_per_trade / 100.0)
-        max_pos_rupees = capital * (max_alloc_pct / 100.0)
+        return df
 
-        risk_per_share = (df["CMP (₹)"] - df["Stop-Loss (₹)"]).clip(lower=0.5)
-        qty_by_risk = (risk_rupees / risk_per_share).astype(int)
-        qty_by_cap = (max_pos_rupees / df["CMP (₹)"]).astype(int)
+    sectors, pbs, des, mcaps = [], [], [], []
+    total = len(df)
 
-        df["Qty to Buy"] = pd.concat([qty_by_risk, qty_by_cap], axis=1).min(axis=1)
-        df["Position (₹)"] = (df["Qty to Buy"] * df["CMP (₹)"]).round(0).astype(int)
-        df = df.sort_values(by=["Score", "Vol Surge (x)"], ascending=[False, False])
+    for idx, (_, row) in enumerate(df.iterrows()):
+        if progress_callback:
+            progress_callback((idx + 1) / total, f"Stage 2: Fundamentals for {row['Symbol']} ({idx + 1}/{total})...")
+        try:
+            info = yf.Ticker(row["Ticker"]).info
+            sector = info.get("sector", "Unknown")
+            pb = info.get("priceToBook", None)
+            de = info.get("debtToEquity", None)
+            de_ratio = round(de / 100.0, 2) if de is not None else None
+            mcap = info.get("marketCap", None)
+            mcap_cr = round(mcap / 1e7, 0) if mcap else None
+        except Exception:
+            sector, pb, de_ratio, mcap_cr = "Unknown", None, None, None
 
-        # Top Metrics
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Cyclical Setups Found", len(df))
-        c2.metric("Top Turnaround Score", f"{df['Score'].iloc[0]} / 100")
-        c3.metric("Max Risk / Trade", f"₹{int(risk_rupees):,}")
+        sectors.append(sector)
+        pbs.append(round(pb, 2) if pb else None)
+        des.append(de_ratio)
+        mcaps.append(mcap_cr)
+        time.sleep(0.15)
 
-        display_cols = [
-            "Symbol", "Score", "Sector", "CMP (₹)", "Drawdown %", "vs 40W EMA %",
-            "12W Base %", "Vol Surge (x)", "P/B", "D/E", "Stop-Loss (₹)",
-            "Risk %", "Qty to Buy", "Position (₹)", "Screener", "TradingView",
-        ]
-
-        st.dataframe(
-            df[display_cols],
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%.0f"),
-                "Screener": st.column_config.LinkColumn("Screener", display_text="Open"),
-                "TradingView": st.column_config.LinkColumn("Chart", display_text="View"),
-            },
-        )
-
-        csv = df.drop(columns=["Ticker"]).to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "📥 Download Shortlist CSV",
-            data=csv,
-            file_name="nse_cyclical_turnaround_shortlist.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
+    out = df.copy()
+    out["Sector"] = sectors
+    out["Mkt Cap (Cr)"] = mcaps
+    out["P/B"] = pbs
+    out["D/E"] = des
+    return out
