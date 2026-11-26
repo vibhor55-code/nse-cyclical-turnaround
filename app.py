@@ -59,44 +59,4 @@ st.caption(
 )
 
 # Quick 2-second Telegram Test Button
-if st.button("🔔 Test Telegram Connection"):
-    ok, msg = send_telegram_message("✅ *Test Successful!* Your Cycle Investing Search Engine is connected to Telegram.")
-    if ok:
-        st.success(msg)
-    else:
-        st.error(msg)
-
-main_tab1, main_tab2 = st.tabs(["🔍 Whole-Market Entry Zone Scanner", "🛡️ My Holdings — Exit Zone Monitor"])
-
-# ==========================================
-# TAB 1: WHOLE-MARKET ENTRY ZONE SCANNER
-# ==========================================
-with main_tab1:
-    if st.button("🚀 Run Whole-Market Cycle Search", type="primary", use_container_width=True):
-        tickers, source_label = get_whole_market_symbols()
-
-        if not tickers:
-            st.error(source_label)
-            st.session_state["nse_blocked"] = True
-        else:
-            st.session_state["nse_blocked"] = False
-            st.session_state["source_label"] = source_label
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-
-            def update_progress(pct, msg):
-                progress_bar.progress(min(max(pct, 0.0), 1.0))
-                status_text.text(msg)
-
-            results_df = run_cycle_search_engine(tickers, progress_callback=update_progress)
-            progress_bar.empty()
-            status_text.empty()
-            st.session_state["results"] = results_df
-
-            if not results_df.empty:
-                sector_brief = generate_executive_sector_report(results_df)
-                st.session_state["sector_brief"] = sector_brief
-                ok, tg_msg = send_executive_report_to_telegram(results_df, sector_brief)
-                if ok:
-                    st.success(f"📲 {tg_msg}")
-                else:
+if st.button("🔔 Test Telegram
